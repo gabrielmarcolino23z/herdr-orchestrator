@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Start an agent from an hc template and make sure its first message arrived.
+
+Usage: start-agent --name NAME --template TEMPLATE --task TEXT
+                   [--cwd DIR] [--label k=v ...] [--outlive-parent] [--no-parent]
+
+A template `hc run` sends instructions + task as the first message. In a new folder, Claude and
+Codex show a folder trust dialog first and the message is lost. This accepts the dialog and sends
+the template's instructions + the task again. Any other dialog stops everything and prints the
+screen (exit 3). Prints a JSON with the terminal's address.
+"""
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import TRUST_DIALOGS, run, run_json, template_body  # noqa: E402
+
+
+def screen_tail(address: str) -> str:
+    return "\n".join(l for l in run(["hc", "read", address, "--lines", "0"]).stdout.splitlines() if l.strip())[-1500:]
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--name", required=True)
+    p.add_argument("--template", required=True)
+    p.add_argument("--task", required=True)
+    p.add_argument("--cwd", default=".")
+    p.add_argument("--label", action="append", default=[])
+    p.add_argument("--outlive-parent", action="store_true")
+    p.add_argument("--no-parent", action="store_true")
+    a = p.parse_args()
+
+    argv = ["hc", "run", "--bg", "--json", "--name", a.name, "--cwd", str(Path(a.cwd).resolve())]
+    for label in a.label:
+        argv += ["--label", label]
+    if a.outlive_parent:
+        argv.append("--outlive-parent")
+    if a.no_parent:
+        argv.append("--no-parent")
+    launch = run_json([*argv, a.template, a.task], timeout=120)
+    if launch is None:
+        print(json.dumps({"error": "hc run failed", "name": a.name}), file=sys.stderr)
+        return 1
+    address = launch["address"]
+    if (launch.get("first_message") or {}).get("sent", True):
+        print(json.dumps({"address": address, "name": a.name, "sent": True}))
+        return 0
+
+    deadline = time.monotonic() + 45
+    accepted = False
+    while time.monotonic() < deadline and not accepted:
+        screen = run(["hc", "read", address, "--lines", "0"]).stdout
+        for marker, keys in TRUST_DIALOGS:
+            if marker in screen:
+                run(["hc", "keys", address, *keys])
+                accepted = True
+                break
+        else:
+            time.sleep(1.5)
+    if not accepted:
+        print(json.dumps({"error": "unknown dialog; resolve it and send the task", "address": address, "screen": screen_tail(address)}), file=sys.stderr)
+        return 3
+
+    run(["hc", "wait", address, "--timeout", "90"], timeout=120)
+    if "needs review before it can run" in run(["hc", "read", address, "--lines", "0"]).stdout:
+        print(json.dumps({"error": "Codex wants its hooks reviewed: open codex, run /hooks and approve the hooks in ~/.codex/hooks.json", "address": address}), file=sys.stderr)
+        return 3
+    sent = run_json(["hc", "send", "--json", address, f"{template_body(a.template)}\n\n{a.task}"], timeout=120) or {}
+    if not sent.get("started", False):
+        print(json.dumps({"error": "the first message did not start a turn; check the screen", "address": address, "screen": screen_tail(address)}), file=sys.stderr)
+        return 3
+    print(json.dumps({"address": address, "name": a.name, "sent": True, "trust": "accepted"}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

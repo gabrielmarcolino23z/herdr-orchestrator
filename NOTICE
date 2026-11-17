@@ -1,0 +1,11 @@
+herdr-orchestrator
+Copyright 2026 Gabriel Marcolino
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+herdr/patches/*.patch modify the `tabs` and `menu` mods that ship with
+herdr-app (https://herdr.dev), licensed under the Apache License, Version 2.0. The patches contain
+context lines from those files. `install` applies them to the copies of those mods found on the
+user's machine and writes the results as orc-tabs and orc-menu.
+Changes made: the project tab has no close button (tabs), and a project space's menu offers
+"Close project…" (menu).

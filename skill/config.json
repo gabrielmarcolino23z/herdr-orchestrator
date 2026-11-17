@@ -1,0 +1,20 @@
+{
+  "groups": {
+    "order": [],
+    "names": {}
+  },
+  "models": {
+    "orchestrator": "opus",
+    "worker_claude": "opus",
+    "reviewer_claude": "opus"
+  },
+  "codex_args": [],
+  "max_workers": 4,
+  "prune_time": "08:30",
+  "publish": "gh pr create --head {branch} --body-file {pr_file}",
+  "protected_branches": [
+    "main",
+    "master",
+    "production"
+  ]
+}

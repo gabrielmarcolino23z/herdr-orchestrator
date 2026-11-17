@@ -1,0 +1,36 @@
+[38;5;173m✻[0m [1mOrchestrator · storefront[0m  [90m~/demo/acme/storefront[0m
+
+[90m>[0m what's open on the backlog? start the checkout stuff first
+
+[38;5;173m●[0m Read the backlog with [36mgh issue list[0m. 5 open, 3 worth starting now:
+    [1m#42[0m Add Apple Pay to checkout          [90mfeature · no blockers[0m
+    [1m#45[0m Fix cart total rounding on discounts  [90mbug · customers report 1¢ diffs[0m
+    [1m#39[0m Lazy-load product images         [90mperf · small[0m
+  [90m#47 and #48 are blocked by #42 ("Blocked by" in the body); they wait.[0m
+
+[38;5;173m●[0m [1mBash[0m(open-worker 42 && open-worker 45 && open-worker 39)
+  [90m⎿[0m  worktree ../storefront-42-add-apple-pay on [36mfeat/42-add-apple-pay-checkout[0m
+     worktree ../storefront-45-fix-cart-total on [36mfix/45-fix-cart-total-rounding[0m
+     worktree ../storefront-39-lazy-load-images on [36mperf/39-lazy-load-product-images[0m
+     [32m3 workers started:[0m w-storefront-42, w-storefront-45, w-storefront-39
+
+[38;5;173m●[0m Three workers are on it, each in its own worktree and branch. I'll check in when one
+  asks something, finishes a phase, or is ready for you.
+
+[90m  <hc> w-storefront-45: tests green (rounding now banker's, 214 passed). moving to review.[0m
+[90m  <hc> w-storefront-39: implemented; running Lighthouse before review.[0m
+
+[38;5;173m●[0m Updates:
+  [1m#45[0m [35mreviewing[0m  · a Codex reviewer is reading the diff (cross-harness review)
+  [1m#39[0m [33mverifying[0m  · LCP 2.9s → 1.7s on the product page so far
+  [1m#42[0m [38;5;173mimplementing[0m · wiring the Apple Pay session endpoint, then the button
+
+[90m>[0m nice. when #45 passes review, open the PR
+
+[38;5;173m●[0m Will do: once the reviewer approves, I'll write the PR body and run your publish command
+  ([36mgh pr create --head fix/45-fix-cart-total-rounding[0m). You'll see it in [1mNeeds you[0m.
+
+[90m@@RULE@@[0m
+[90m>[0m 
+[90m@@RULE@@[0m
+  [90m⏵⏵ auto mode on · 3 workers[0m

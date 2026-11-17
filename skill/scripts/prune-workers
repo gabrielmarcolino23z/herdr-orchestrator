@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""Clean up delivered workers' worktrees: herdr, teardown and git, in that order.
+
+Usage: prune-workers [--dry-run] [--force] [repo ...]   (default: every registered project)
+
+1. Find the worktrees to remove: those whose branch tracked a remote branch that is gone
+   (merged and deleted on GitHub). `git fetch --prune` first.
+2. If a herdr agent is still working or blocked in one of them, stop (unless --force).
+3. Close the herdr spaces of those worktrees, and spaces whose folders no longer exist.
+4. Run the project's `teardown` commands (config: projects.<repo>.teardown) in each worktree.
+5. `git worktree remove` (git refuses a worktree with uncommitted changes; the refusal is shown).
+6. Drop panel records whose worktree is gone.
+"""
+import os
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import SCRIPTS, WORKERS, config, read_json, registry, run, run_json  # noqa: E402
+
+BUSY = {"working", "blocked"}
+
+
+def candidates(repo: Path) -> list[Path]:
+    run(["git", "fetch", "--prune", "--quiet", "origin"], cwd=repo)
+    gone = {
+        line.split()[0]
+        for line in run(["git", "for-each-ref", "--format=%(refname:short) %(upstream:track)", "refs/heads"], cwd=repo).stdout.splitlines()
+        if line.endswith("[gone]")
+    }
+    found, path = [], None
+    for line in run(["git", "worktree", "list", "--porcelain"], cwd=repo).stdout.splitlines():
+        if line.startswith("worktree "):
+            path = Path(line[9:])
+        elif line.startswith("branch refs/heads/") and line[18:] in gone and path != repo:
+            found.append(path)
+    return found
+
+
+def herdr_spaces() -> list[dict] | None:
+    """Each space with the folders its terminals are (or were) in."""
+    listing = run_json(["herdr-app", "ls"])
+    if listing is None:
+        return None
+    spaces = []
+    for space in listing.get("spaces", []):
+        folders, statuses = {space.get("folder") or ""}, set()
+        for tab in space.get("tabs", []):
+            for term in tab.get("terminals", []):
+                statuses.add(term.get("status"))
+                info = run_json(["hc", "get", term["terminal"], "--json"]) or {}
+                folders |= {info.get("cwd") or "", (info.get("foreground") or {}).get("cwd") or ""}
+        spaces.append({"id": space["id"], "name": space.get("name"), "folders": {f for f in folders if f}, "statuses": statuses})
+    return spaces
+
+
+def inside(folder: str, root: Path) -> bool:
+    return folder == str(root) or folder.startswith(str(root) + os.sep)
+
+
+def main(argv: list[str]) -> int:
+    dry, force = "--dry-run" in argv, "--force" in argv
+    repos = [Path(a).expanduser().resolve() for a in argv if not a.startswith("--")] or [Path(r) for r in registry()]
+    missing = [r for r in repos if not (r / ".git").exists()]
+    for repo in missing:
+        print(f"skipping {repo}: not a git repository (or gone).", file=sys.stderr)
+    targets = {repo: candidates(repo) for repo in repos if repo not in missing}
+    every = [w for ws in targets.values() for w in ws]
+    spaces = herdr_spaces()
+    if spaces is None:
+        print("herdr-app is not answering: spaces will not be closed.", file=sys.stderr)
+        spaces = []
+
+    doomed = [s for s in spaces if s["folders"] and (
+        any(inside(f, w) for f in s["folders"] for w in every) or all(not Path(f).exists() for f in s["folders"]))]
+    busy = [s for s in doomed if s["statuses"] & BUSY]
+    if busy and not force:
+        for s in busy:
+            print(f"stopped: space '{s['name']}' has a working/blocked agent. Use --force to clean it anyway.", file=sys.stderr)
+        return 1
+    for s in doomed:
+        print(f"{'would close' if dry else 'closing'} space '{s['name']}'")
+        if not dry:
+            run(["herdr-app", "do", "space.close", "--id", s["id"], "--confirmed", "true"])
+
+    failures = 0
+    projects = config().get("projects", {})
+    for repo, worktrees in targets.items():
+        teardown = projects.get(repo.name, {}).get("teardown", [])
+        for wt in worktrees:
+            ok = True
+            for cmd in teardown:
+                print(f"{'would run' if dry else 'running'} teardown in {wt.name}: {cmd}")
+                if not dry and run([str(SCRIPTS / "with-tools"), "sh", "-c", cmd], cwd=wt).returncode != 0:
+                    print(f"teardown failed in {wt}; keeping the worktree.", file=sys.stderr)
+                    ok, failures = False, failures + 1
+                    break
+            if not ok:
+                continue
+            print(f"{'would remove' if dry else 'removing'} worktree {wt}")
+            if not dry:
+                r = run(["git", "worktree", "remove", str(wt)], cwd=repo)
+                if r.returncode != 0:
+                    print(f"git refused {wt}: {r.stderr.strip()}", file=sys.stderr)
+                    failures += 1
+
+    for record in sorted(WORKERS.glob("*.json")) if WORKERS.exists() else []:
+        worktree = read_json(record).get("worktree") or ""
+        if worktree and not Path(worktree).exists():
+            print(f"{'would drop' if dry else 'dropping'} {record.name} from the panel")
+            if not dry:
+                record.unlink()
+
+    if not every and not doomed:
+        print("no worktrees or spaces to clean up.")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,10 @@
+#!/bin/sh
+# Login autostart: reopen the agents that were running and make sure every project has its space,
+# anchor and orchestrator. Log: ~/.local/state/herdr-orchestrator/login.log
+S="$(dirname "$(readlink -f "$0")")"
+mkdir -p "$HOME/.local/state/herdr-orchestrator"
+{
+  echo "== $(date '+%F %T')"
+  "$S/resume-agents" --wait 120
+  "$S/ensure-projects"
+} >> "$HOME/.local/state/herdr-orchestrator/login.log" 2>&1

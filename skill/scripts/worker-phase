@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Set a worker's phase (with an optional note and PR) for the Inbox, Working list and Details.
+
+Usage: worker-phase <issue> <phase> [--note TEXT] [--pr URL] [--repo NAME]
+Phases: planning, implementing, verifying, reviewing, ready, blocked.
+
+--note: for `blocked`, the exact question for the user; for `ready`, a one-line summary.
+Updates ~/.local/state/herdr-orchestrator/workers/<repo>-<issue>.json and appends the change to
+~/.local/state/herdr-orchestrator/events.jsonl (the phase history shown in Details).
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import STATE, find_worker, now_ms, read_json, write_json  # noqa: E402
+
+PHASES = ["planning", "implementing", "verifying", "reviewing", "ready", "blocked"]
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("issue", type=int)
+    p.add_argument("phase", choices=PHASES)
+    p.add_argument("--note", default="")
+    p.add_argument("--pr")
+    p.add_argument("--repo")
+    a = p.parse_args()
+    path = find_worker(a.issue, a.repo)
+    if path is None:
+        print(f"no worker for issue {a.issue} (pass --repo if several repos have it).", file=sys.stderr)
+        return 1
+    data = read_json(path)
+    ts = now_ms()
+    if data.get("phase") != a.phase:
+        data["phase_since"] = ts
+    data.update({"phase": a.phase, "note": a.note, "updated": ts})
+    if a.pr:
+        data["pr"] = a.pr
+    write_json(path, data)
+    STATE.mkdir(parents=True, exist_ok=True)
+    with open(STATE / "events.jsonl", "a") as f:
+        f.write(json.dumps({"ts": ts, "repo": data.get("repo"), "issue": a.issue, "phase": a.phase,
+                            "note": a.note, **({"pr": a.pr} if a.pr else {})}, ensure_ascii=False) + "\n")
+    print(f"#{a.issue}: {a.phase}" + (f" — {a.note}" if a.note else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

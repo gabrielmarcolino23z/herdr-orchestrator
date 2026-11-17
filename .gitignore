@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+herdr/mod/orchestrator/gpui-kit.d.ts
+herdr/mod/orchestrator/jsconfig.json

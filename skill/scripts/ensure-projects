@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Make sure every project has its space, with the anchor tab ("project") and its orchestrator.
+
+Usage: ensure-projects [--space ID] [--repo DIR] [--create DIR] [--close DIR] [--no-orchestrator] [--dry-run]
+
+A project is a main git repo (not a worktree) under `projects_root` with a space in herdr.
+- anchor: a "project" tab (the `orchestrator` mod, project view), always first. It is not a terminal,
+  so closing Claude, the orchestrator or any terminal never closes the space.
+- orchestrator: terminal `orchestrator-<repo>` in a "orchestrator" tab, started by _common.orchestrator_argv
+  (tools on PATH, configured model, the orchestrator.md role, the last conversation).
+- registry (projects.json): with no filters, a registered project whose space disappeared is
+  recreated. That is what makes projects impossible to close by accident.
+--space ID / --repo DIR: only that space / that repo.
+--create DIR: register and create the project's space (or ensure it, if it exists).
+--close DIR: the one way to close a project on purpose: unregister it and close its space.
+--no-orchestrator: only the anchor.
+"""
+import argparse
+import fcntl
+import json
+import secrets
+import sys
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import (  # noqa: E402
+    STATE, accept_trust, orchestrator_argv, orchestrator_name, is_live, last_orchestrator_session, main_repo,
+    registry, run, run_json, save_registry,
+)
+
+ANCHOR_MOD = "orchestrator"
+
+
+def project_spaces(only_space: str | None = None, only_repo: Path | None = None) -> list[dict]:
+    listing = run_json(["herdr-app", "ls"])
+    if listing is None:
+        print("herdr-app is not answering.", file=sys.stderr)
+        sys.exit(1)
+    cwds = {t["address"]: t.get("cwd") for t in (run_json(["hc", "ls", "--json"]) or {}).get("terminals", [])}
+    found = []
+    for space in listing.get("spaces", []):
+        if space.get("machine") or (only_space and space["id"] != only_space):
+            continue
+        # A project space sits at a repo's root (its folder, or its first terminal's). A space in a
+        # subfolder, or in a worktree (a worker's), is not a project.
+        paths = [space.get("folder")] + [cwds.get(x["terminal"]) for t in space["tabs"] for x in t["terminals"]]
+        repo = next((r for r in (main_repo(p) for p in paths[:2] if p) if r and str(r) in paths[:2]), None)
+        if repo is None or (only_repo and repo != only_repo):
+            continue
+        found.append({"space": space, "repo": repo})
+    return found
+
+
+def ensure_anchor(space: dict, repo: Path, dry: bool) -> None:
+    anchor = next((t for t in space["tabs"] if t["name"] == "project" and not t["terminals"]), None)
+    if anchor is None:
+        print(f"{'would create' if dry else 'creating'} the anchor in '{space['name']}'")
+        if dry:
+            return
+        made = run_json(["herdr-app", "do", "tab.new", json.dumps({
+            "space": space["id"], "name": "project", "mod": ANCHOR_MOD,
+            "props": {"view": "project", "repo": str(repo)}, "focus": False})])
+        tab_id = (made or {}).get("tab")
+    else:
+        tab_id = anchor["id"]
+    if tab_id and not dry and space["tabs"] and space["tabs"][0]["id"] != tab_id:
+        run(["herdr-app", "do", "tab.move", "--id", tab_id, "--index", "1"])
+
+
+def launch_orchestrator(space_id: str, repo: Path, dry: bool) -> str | None:
+    name = orchestrator_name(repo)
+    if is_live(name):
+        return None
+    resumed = bool(last_orchestrator_session(repo))
+    print(f"{'would open' if dry else 'opening'} {name}{' (resuming its conversation)' if resumed else ''}")
+    if dry:
+        return name
+    run(["hc", "rm", name])  # a finished terminal with the same name would confuse `hc get`
+    tab = f"tb{secrets.token_hex(16)}"
+    argv = ["hc", "run", "--bg", "--json", "--no-parent", "--keep", "--name", name, "--cwd", str(repo),
+            "--label", f"herdr.space={space_id}", "--label", f"herdr.tab={tab}", "--", *orchestrator_argv(repo)]
+    if run_json(argv) is None:
+        print(f"could not open {name}.", file=sys.stderr)
+        return None
+    for _ in range(20):
+        if run_json(["herdr-app", "do", "tab.rename", "--id", tab, "--name", "orchestrator"]):
+            break
+        time.sleep(0.5)
+    accept_trust(name)
+    return name
+
+
+def create_space(repo: Path, dry: bool) -> None:
+    """The space is born from the orchestrator's terminal; then it gets its name and anchor."""
+    space_id = f"sp{secrets.token_hex(16)}"
+    if launch_orchestrator(space_id, repo, dry) is None or dry:
+        return
+    for _ in range(20):
+        if run_json(["herdr-app", "do", "space.rename", "--id", space_id, "--name", repo.name]):
+            break
+        time.sleep(0.5)
+    for item in project_spaces(space_id):
+        ensure_anchor(item["space"], repo, dry)
+
+
+def close_project(path: str, dry: bool) -> int:
+    repo = main_repo(Path(path).expanduser().resolve()) or Path(path).expanduser().resolve()
+    for item in project_spaces(None, repo):
+        print(f"{'would close' if dry else 'closing'} space '{item['space']['name']}'")
+        if not dry:
+            run(["herdr-app", "do", "space.close", "--id", item["space"]["id"], "--confirmed", "true"])
+    if not dry:
+        save_registry([r for r in registry() if r != str(repo)])
+    print(f"{repo.name} {'would be' if dry else 'was'} closed (the orchestrator's conversation, workers and worktrees are kept).")
+    return 0
+
+
+def lock():
+    """One at a time: the sidebar, login and the anchor may call at once."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    handle = open(STATE / "ensure-projects.lock", "w")
+    deadline = time.monotonic() + 90
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except BlockingIOError:
+            if time.monotonic() > deadline:
+                return None
+            time.sleep(0.5)
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("--space")
+    p.add_argument("--repo")
+    p.add_argument("--create")
+    p.add_argument("--close")
+    p.add_argument("--no-orchestrator", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    a = p.parse_args()
+    held = lock()
+    if held is None:
+        print("another ensure-projects has been running for too long; giving up.", file=sys.stderr)
+        return 1
+    if a.close:
+        return close_project(a.close, a.dry_run)
+
+    only_repo = Path(a.repo).expanduser().resolve() if a.repo else None
+    if a.create:
+        repo = main_repo(Path(a.create).expanduser().resolve())
+        if repo is None:
+            print(f"{a.create} is not inside a git repository (or is a worktree).", file=sys.stderr)
+            return 1
+        if not a.dry_run:
+            save_registry(registry() + [str(repo)])
+        if not project_spaces(None, repo):
+            create_space(repo, a.dry_run)
+            return 0
+        only_repo = repo
+
+    items = project_spaces(a.space, only_repo)
+    if items and not a.dry_run:
+        save_registry(registry() + [str(i["repo"]) for i in items])
+    for item in items:
+        ensure_anchor(item["space"], item["repo"], a.dry_run)
+        if not a.no_orchestrator:
+            launch_orchestrator(item["space"]["id"], item["repo"], a.dry_run)
+
+    if not (a.space or a.repo or a.create):  # no filters: bring back what disappeared
+        present = {str(i["repo"]) for i in project_spaces()}
+        kept = []
+        for path in registry():
+            if not Path(path).is_dir():
+                print(f"{path} no longer exists; unregistered.")
+                continue
+            kept.append(path)
+            if path not in present:
+                print(f"{'would recreate' if a.dry_run else 'recreating'} project {Path(path).name}")
+                create_space(Path(path), a.dry_run)
+        if not a.dry_run:
+            save_registry(kept)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

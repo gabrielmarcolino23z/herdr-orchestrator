@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Test the installed herdr-orchestrator.
+
+Usage: test [--quick | --full]
+
+--quick (default): script syntax, `herdr-app check` of the orchestrator mod's 3 views and of the patched
+  mods, the layout pointing at mods that exist, rendered templates, skill links, hooks, dry runs.
+--full: quick + end to end in a throwaway project in the temp folder (cheap model
+  for the orchestrator): creates the project, closes its space and anchor and checks they come back,
+  checks the orchestrator's role, opens a worker, sets a phase, checks the panel record, prunes and
+  closes the project. Never changes window focus. Cleans everything up, even on failure.
+"""
+import json
+import os
+import re
+import secrets
+import shutil
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import (  # noqa: E402
+    ORCHESTRATORS, HOME, REPO, SCRIPTS, SKILL, TEMPLATES, orchestrator_name, is_live, registry, run,
+    run_json, save_registry, worker_file, worker_name,
+)
+
+MODS = HOME / ".config/herdr-app/mods"
+results: list[tuple[bool, str]] = []
+
+
+def ok(cond, text: str) -> bool:
+    results.append((bool(cond), text))
+    print(f"  {'✓' if cond else '✗'} {text}")
+    return bool(cond)
+
+
+def check_mod(folder: Path) -> bool:
+    return run(["herdr-app", "check", folder], timeout=180).returncode == 0
+
+
+def quick() -> None:
+    print("Scripts")
+    for s in sorted(SCRIPTS.iterdir()):
+        if s.is_file() and (s.suffix == ".py" or (not s.suffix and s.read_text().startswith("#!/usr/bin/env python3"))):
+            r = run([sys.executable, "-I", "-c", f"import ast;ast.parse(open({str(s)!r}).read())"])
+            ok(r.returncode == 0, f"{s.name} parses")
+    ok(not (SCRIPTS / "__pycache__").exists(), "no __pycache__ in the skill")
+    for link in (HOME / ".agents/skills/herdr-orchestrator", HOME / ".claude/skills/herdr-orchestrator"):
+        ok(link.is_symlink() and link.resolve() == SKILL, f"{str(link).replace(str(HOME), '~')} links to this repo")
+
+    print("Mods")
+    for view in ("sidebar", "new", "project", "close"):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "orchestrator"
+            shutil.copytree(MODS / "orchestrator", dest, ignore=shutil.ignore_patterns("gpui-kit.d.ts", "jsconfig.json"))
+            main = dest / "main.js"
+            main.write_text(main.read_text().replace("VIEWS[props()?.view] ?? sidebar", f"VIEWS[props()?.view] ?? VIEWS[\"{view}\"]"))
+            ok(check_mod(dest), f"orchestrator · {view} view loads and renders")
+    for name in ("orc-tabs", "orc-menu"):
+        ok((MODS / name / "main.js").exists() and check_mod(MODS / name), f"{name} loads and renders")
+    source = REPO / "herdr/mod/orchestrator"
+    same = all((MODS / "orchestrator" / p.name).exists() and (MODS / "orchestrator" / p.name).read_text() == p.read_text()
+               for p in source.iterdir() if p.is_file())
+    ok(same, "installed mod matches the repo")
+
+    print("Layout and config")
+    status = run_json(["herdr-app", "status"]) or {}
+    ok(not status.get("errors"), f"herdr-app reports no mod/layout errors ({status.get('errors') or 'none'})")
+    layout = HOME / ".config/herdr-app/layouts" / f"{status.get('layout', '')}.json"
+    used = set(re.findall(r'"mod": "([a-z0-9-]+)"', layout.read_text())) if layout.exists() else set()
+    ok(used and all((MODS / m).exists() for m in used), f"layout uses only existing mods ({', '.join(sorted(used))})")
+    ok({"orc-tabs", "orchestrator"} <= used and not ({"spaces", "agents", "orc-spaces", "orc-agents"} & used), "layout uses orc-tabs and the orchestrator sidebar (no Spaces/Agents lists)")
+    text = layout.read_text() if layout.exists() else ""
+    ok('"view": "sidebar"' in text, "layout has the orchestrator sidebar")
+    ok((HOME / ".local/state/herdr-orchestrator/ui.json").exists(), "ui.json written")
+    for t in ("worker-claude", "worker-codex", "reviewer-claude", "reviewer-codex"):
+        text = (TEMPLATES / f"{t}.md").read_text() if (TEMPLATES / f"{t}.md").exists() else ""
+        ok(text and "{{" not in text, f"template {t} installed and rendered")
+    claude_settings = HOME / ".claude/settings.json"
+    codex_hooks = HOME / ".codex/hooks.json"
+    ok(claude_settings.exists() and "mark-session claude" in claude_settings.read_text(), "Claude hook (mark-session)")
+    ok(codex_hooks.exists() and "mark-session codex" in codex_hooks.read_text(), "Codex hook (mark-session)")
+    if sys.platform.startswith("linux"):
+        ok(run(["systemctl", "--user", "is-enabled", "herdr-orchestrator-prune.timer"]).stdout.strip() == "enabled", "prune timer enabled")
+        ok((HOME / ".config/autostart/herdr-orchestrator-login.desktop").exists(), "login autostart")
+
+    print("Dry runs")
+    for argv in (["ensure-projects", "--dry-run"], ["prune-workers", "--dry-run"], ["resume-agents", "--dry-run"]):
+        ok(run([SCRIPTS / argv[0], *argv[1:]], timeout=300).returncode == 0, " ".join(argv))
+
+
+def wait_for(cond, seconds: int, every: float = 2) -> bool:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(every)
+    return cond()
+
+
+def spaces_at(folder: Path) -> list[dict]:
+    return [s for s in (run_json(["herdr-app", "ls"]) or {}).get("spaces", []) if s.get("folder") == str(folder)]
+
+
+def full() -> None:
+    print("End to end (throwaway project)")
+    repo = Path(tempfile.gettempdir()) / f"orc-test-{secrets.token_hex(3)}"  # projects live anywhere
+    os.environ["ORCHESTRATOR_MODEL"] = os.environ.get("ORCHESTRATOR_TEST_MODEL", "haiku")
+    orchestrator, worker = orchestrator_name(repo), worker_name(repo, 9101)
+    record = worker_file(repo.name, 9101)
+    try:
+        repo.mkdir(parents=True)
+        run(["git", "init", "-q", "-b", "main"], cwd=repo)
+        run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo)
+
+        r = run([SCRIPTS / "ensure-projects", "--create", repo], timeout=180)
+        ok(r.returncode == 0 and wait_for(lambda: spaces_at(repo), 30), "ensure-projects --create makes the project's space")
+        space = (spaces_at(repo) or [{}])[0]
+        tabs = [t["name"] for t in space.get("tabs", [])]
+        ok(tabs[:1] == ["project"] and "orchestrator" in tabs, f"anchor first, then the orchestrator ({tabs})")
+        ok(str(repo) in registry(), "project registered")
+        ok(wait_for(lambda: is_live(orchestrator), 30), f"{orchestrator} is live")
+        pid = ((run_json(["hc", "get", orchestrator, "--json"]) or {}).get("foreground") or {}).get("pid")
+        cmd = Path(f"/proc/{pid}/cmdline").read_text().replace("\0", " ") if pid and Path(f"/proc/{pid}").exists() else ""
+        ok("--append-system-prompt-file" in cmd and "orchestrator.md" in cmd, "orchestrator starts with its role (orchestrator.md)")
+
+        run(["herdr-app", "do", "space.close", "--id", space["id"], "--confirmed", "true"])
+        ok(wait_for(lambda: any(t["name"] == "project" for s in spaces_at(repo) for t in s["tabs"]), 45),
+           "a space closed by accident comes back (≤45 s)")
+        space = (spaces_at(repo) or [{}])[0]
+        anchor = next((t for t in space.get("tabs", []) if t["name"] == "project"), None)
+        if anchor:
+            run(["herdr-app", "do", "tab.close", "--id", anchor["id"], "--confirmed", "true"])
+        ok(wait_for(lambda: any(s["tabs"] and s["tabs"][0]["name"] == "project" for s in spaces_at(repo)), 45),
+           "a closed anchor comes back as the first tab (≤45 s)")
+
+        r = run([SCRIPTS / "open-worker", "9101", "--repo", repo, "--base", "main", "--title", "Orchestrator test", "--no-setup", "--force",
+                 "--task", f"TEST: only run `{SCRIPTS}/worker-phase 9101 implementing --repo {repo.name}` and answer 'ok'. Nothing else."],
+                timeout=300)
+        ok(r.returncode == 0, f"open-worker opens {worker}")
+        ok(wait_for(lambda: json.loads(record.read_text()).get("phase") == "implementing" if record.exists() else False, 120),
+           "the worker set its phase on the panel")
+        wt = Path(json.loads(record.read_text()).get("worktree", "")) if record.exists() else None
+        ok(bool(wt and spaces_at(wt)), "the worker's space exists (nested under the project)")
+        info = run_json(["hc", "get", worker, "--json"]) or {}
+        ok((info.get("labels") or {}).get("repo") == repo.name, "worker labeled with its repo (for the Agents tree)")
+
+        run(["hc", "kill", worker])
+        run(["hc", "rm", worker])
+        if wt and wt.exists():
+            run(["git", "worktree", "remove", "--force", wt], cwd=repo)
+        r = run([SCRIPTS / "prune-workers", repo], timeout=300)
+        ok(r.returncode == 0 and not record.exists(), "prune drops the worker from the panel")
+
+        r = run([SCRIPTS / "ensure-projects", "--close", repo], timeout=120)
+        ok(r.returncode == 0 and wait_for(lambda: not spaces_at(repo), 20) and str(repo) not in registry(),
+           "Close project closes the space and unregisters it")
+        time.sleep(15)
+        ok(not spaces_at(repo), "a project closed on purpose stays closed")
+    finally:
+        for name in (worker, orchestrator):
+            run(["hc", "kill", name])
+            run(["hc", "rm", name])
+        for s in spaces_at(repo):
+            run(["herdr-app", "do", "space.close", "--id", s["id"], "--confirmed", "true"])
+        save_registry([r for r in registry() if r != str(repo)])
+        if repo.exists():
+            for line in run(["git", "worktree", "list", "--porcelain"], cwd=repo).stdout.splitlines():
+                if line.startswith("worktree ") and line[9:] != str(repo):
+                    shutil.rmtree(line[9:], ignore_errors=True)
+            shutil.rmtree(repo, ignore_errors=True)
+        try:
+            repo.parent.rmdir()
+        except OSError:
+            pass
+        record.unlink(missing_ok=True)
+        (ORCHESTRATORS / f"{orchestrator}.json").unlink(missing_ok=True)
+
+
+def main() -> int:
+    quick()
+    if "--full" in sys.argv:
+        full()
+    failed = [t for passed, t in results if not passed]
+    print(f"\n{len(results) - len(failed)}/{len(results)} ok" + (f"; failed: {', '.join(failed)}" if failed else ""))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

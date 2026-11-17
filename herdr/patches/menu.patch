@@ -1,0 +1,31 @@
+--- a/menu/main.js
++++ b/menu/main.js
+@@ -58,14 +58,18 @@
+       return [
+         ["Rename", "tab.rename", { id: tg.id }],
+         ["New tab", "tab.new", { space: tg.space }],
+-        ["Close", "tab.close", { id: tg.id }],
++        // orc: the "project" anchor tab doesn't close (it holds the project's space)
++        ...(spaces().some((s) => s.tabs.some((c) => c.id === tg.id && c.name === "project")) ? [] : [["Close", "tab.close", { id: tg.id }]]),
+       ];
+     case "space":
+       return [
+         ["Rename", "space.rename", { id: tg.id }],
+         ...(git ? [["New worktree", "worktree", { space: tg.id, action: "new" }], ["Open worktree", "worktree", { space: tg.id, action: "open" }]] : []),
+         ...(git === "linked" ? [["Remove worktree", "worktree", { space: tg.id, action: "remove" }]] : []),
+-        ["Close", "space.close", { id: tg.id }],
++        // orc: a project space only closes through its own action, with a confirmation
++        ...(spaces().some((s) => s.id === tg.id && s.tabs.some((c) => c.name === "project"))
++          ? [["Close project…", "orc.project.close", { space: tg.id }]]
++          : [["Close", "space.close", { id: tg.id }]]),
+       ];
+     default:
+       return [
+@@ -113,6 +117,7 @@
+     if (!it) return;
+     closeOverlay(props()?.overlay);
+     if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
++    else if (it[1] === "orc.project.close") openOverlay({ mod: "orchestrator", kind: "dialog", width: 460, height: 230, props: { view: "close", ...it[2] } });
+     else run(it[1], it[2]);
+   }
+ 

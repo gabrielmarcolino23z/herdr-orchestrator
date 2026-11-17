@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""After a reboot, reopen Claude Code / Codex in every herdr terminal that came back as a bare shell.
+
+Usage: resume-agents [--dry-run] [--wait SECONDS]
+
+herdr-core brings each terminal back at the same address and folder, but as a shell. This finds
+the terminals labeled `agent` (by the mark-session hook) whose foreground program is a shell and
+types the resume command into them:
+- orchestrator-<repo>: the single orchestrator command (_common.orchestrator_argv: tools, model, role, conversation);
+- other Claude: claude --resume <session> [--model <model>]  (no session: claude --continue);
+- Codex: codex --no-daemon resume <session>  (no session: --last, the latest in that folder).
+--wait waits for herdr-app to answer (at login).
+"""
+import shlex
+import sys
+import time
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import WITH_TOOLS, orchestrator_argv, main_repo, run, run_json  # noqa: E402
+
+SHELLS = {"zsh", "bash", "sh", "fish", "dash", "nu"}
+
+
+def wait_for_herdr(seconds: int) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if run_json(["herdr-app", "ls"]) is not None:
+            return True
+        time.sleep(3)
+    return False
+
+
+def resume_command(info: dict) -> list[str] | None:
+    labels = info.get("labels") or {}
+    kind, session, model = labels.get("agent"), labels.get("session") or "", labels.get("model") or ""
+    if (info.get("name") or "").startswith("orchestrator-"):
+        repo = main_repo((info.get("foreground") or {}).get("cwd") or info.get("cwd") or "")
+        if repo:
+            return orchestrator_argv(repo)
+    if kind == "claude":
+        cmd = ["claude", "--resume", session] if session else ["claude", "--continue"]
+        return [str(WITH_TOOLS), *cmd, *(["--model", model] if model else [])]
+    if kind == "codex":
+        return [str(WITH_TOOLS), "codex", "--no-daemon", "resume", session or "--last"]
+    return None
+
+
+def main(argv: list[str]) -> int:
+    dry_run = "--dry-run" in argv
+    if "--wait" in argv:
+        seconds = int(argv[argv.index("--wait") + 1])
+        if not wait_for_herdr(seconds):
+            print(f"herdr-app did not answer in {seconds}s; nothing resumed.", file=sys.stderr)
+            return 1
+    listing = run_json(["hc", "ls", "--json"])
+    if listing is None:
+        print("hc ls failed: is herdr-core running?", file=sys.stderr)
+        return 1
+    resumed = 0
+    for entry in listing.get("terminals", []):
+        if entry.get("state") != "live":
+            continue
+        info = run_json(["hc", "get", entry["address"], "--json"]) or {}
+        foreground = (info.get("foreground") or {}).get("name") or ""
+        if foreground not in SHELLS or (info.get("status") or {}).get("state"):
+            continue
+        command = resume_command(info)
+        if command is None:
+            continue
+        line = shlex.join(command)
+        where = (info.get("labels") or {}).get("where") or info.get("cwd")
+        print(f"{'would resume' if dry_run else 'resuming'} {entry['address']} ({where}): {line}")
+        if not dry_run:
+            run(["hc", "send", entry["address"], line], timeout=90)
+        resumed += 1
+    if resumed == 0:
+        print("no agents to resume.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

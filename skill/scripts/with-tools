@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run a program with your version-manager tools (node, bun, codex, python…) on PATH.
+# herdr-core terminals don't go through your shell's rc file, where tools like mise are usually
+# activated; without this, repo hooks (e.g. `node guard.mjs`) and setup steps can't find them.
+# mise shims respect each folder's versions (.nvmrc, mise.toml). Without mise this is a no-op.
+[ -d "$HOME/.local/share/mise/shims" ] && PATH="$HOME/.local/share/mise/shims:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
+exec "$@"

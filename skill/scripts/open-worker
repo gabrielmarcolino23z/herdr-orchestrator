@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Open a worker for an issue: worktree + setup + herdr space + agent from a template.
+
+Usage: open-worker <issue> [--repo DIR] [--agent claude|codex] [--type feat|fix|chore|docs|spike]
+                   [--slug SLUG] [--base REF] [--task EXTRA-TEXT] [--no-setup] [--title TITLE] [--force]
+
+- repo: default is the current folder's repo (a worktree resolves to its main checkout).
+- base: default origin/HEAD.
+- worktree: <repo-parent>/<repo>-<issue>-<slug>, branch <type>/<issue>-<slug> (reused if present).
+- setup: the project's `setup` commands from the config (`projects.<repo>.setup`), run in the worktree.
+- herdr: a "#<issue> <short title>" space with a "worker" tab, nested under the project.
+- agent: template worker-<agent>, named w-<repo>-<issue>, child of the caller, outlives it.
+- refuses when `max_workers` workers are alive or the issue is blocked by open issues
+  ("Blocked by #12", "Depends on #3"…), unless --force.
+- records the worker in ~/.local/state/herdr-orchestrator/workers/<repo>-<issue>.json (the panel reads it).
+"""
+import argparse
+import json
+import re
+import secrets
+import sys
+import time
+import unicodedata
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import (  # noqa: E402
+    SCRIPTS, config, orchestrator_name, is_live, now_ms, read_json, run, run_json, worker_file, worker_name, write_json,
+)
+
+STOP = {"a", "an", "the", "of", "to", "and", "for", "in", "on", "with", "o", "a", "os", "as", "de", "do", "da", "e", "em", "no", "na", "com", "um", "uma"}
+BLOCKERS = r"(?:blocked\s+by|depends\s+on|bloquead[ao]\s+por|depende(?:\s+d[aoe]s?)?)[^\n#]*((?:#\d+[,\s]*(?:and|e)?\s*)+)"
+
+
+def slugify(title: str, words: int = 4) -> str:
+    ascii_title = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode().lower()
+    parts = [w for w in re.findall(r"[a-z0-9]+", ascii_title) if w not in STOP]
+    return "-".join(parts[:words]) or "work"
+
+
+def short_title(title: str, limit: int = 32) -> str:
+    return title if len(title) <= limit else title[: limit - 1].rstrip() + "…"
+
+
+def die(msg: str, code: int = 1) -> int:
+    print(msg, file=sys.stderr)
+    return code
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    p.add_argument("issue", type=int)
+    p.add_argument("--repo", default=".")
+    p.add_argument("--agent", choices=["claude", "codex"], default="claude")
+    p.add_argument("--type", default="feat", choices=["feat", "fix", "chore", "docs", "spike"])
+    p.add_argument("--slug")
+    p.add_argument("--base")
+    p.add_argument("--task", default="")
+    p.add_argument("--title", help="for repos whose issues are not on GitHub")
+    p.add_argument("--no-setup", action="store_true")
+    p.add_argument("--force", action="store_true", help="ignore the worker limit and open blockers")
+    a = p.parse_args()
+
+    repo = Path(a.repo).expanduser().resolve()
+    common = run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo).stdout.strip()
+    if not common:
+        return die(f"{repo} is not a git repository; run from inside the repo or pass --repo.")
+    repo = Path(common).parent if common.endswith("/.git") else Path(run(["git", "rev-parse", "--show-toplevel"], cwd=repo).stdout.strip())
+    cfg = config()
+    name = worker_name(repo, a.issue)
+    record_path = worker_file(repo.name, a.issue)
+    alive = [t for t in (run_json(["hc", "ls", "--json"]) or {}).get("terminals", [])
+             if t.get("state") == "live" and str(t.get("name") or "").startswith("w-")]
+    if len(alive) >= cfg["max_workers"] and not a.force:
+        return die(f"{len(alive)} workers are already alive (max_workers is {cfg['max_workers']}); use --force.")
+    if is_live(name):
+        return die(f"a live terminal named {name} already exists; see `hc get {name}`.")
+
+    run(["git", "fetch", "--quiet", "origin"], cwd=repo)
+    base = a.base or run(["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd=repo).stdout.strip() or "origin/main"
+
+    if a.title:
+        title, url = a.title, ""
+    else:
+        info = run_json(["gh", "issue", "view", str(a.issue), "--json", "title,url,state,body"], cwd=repo)
+        if info is None:
+            return die(f"could not read issue #{a.issue} with gh (use --title for a repo without GitHub issues).")
+        if info.get("state") != "OPEN":
+            return die(f"issue #{a.issue} is not open ({info.get('state')}).")
+        title, url = info["title"], info["url"]
+        blockers = sorted({int(n) for group in re.findall(BLOCKERS, info.get("body") or "", re.I) for n in re.findall(r"#(\d+)", group)})
+        still_open = [n for n in blockers if (run_json(["gh", "issue", "view", str(n), "--json", "state"], cwd=repo) or {}).get("state") == "OPEN"]
+        if still_open and not a.force:
+            return die(f"#{a.issue} is blocked by open issue(s): {', '.join('#' + str(n) for n in still_open)}. Use --force to open it anyway.")
+
+    slug = a.slug or slugify(title)
+    branch = f"{a.type}/{a.issue}-{slug}"
+    wt = repo.parent / f"{repo.name}-{a.issue}-{slug}"
+    if wt.exists():
+        print(f"reusing worktree {wt}")
+    else:
+        exists = run(["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=repo).returncode == 0
+        args = ["git", "worktree", "add", str(wt), branch] if exists else ["git", "worktree", "add", "-b", branch, str(wt), base]
+        r = run(args, cwd=repo)
+        if r.returncode != 0:
+            return die(f"git worktree add failed: {r.stderr.strip()}")
+        print(f"worktree {wt} on branch {branch} (base {base})")
+
+    if not a.no_setup:
+        for cmd in cfg.get("projects", {}).get(repo.name, {}).get("setup", []):
+            print("setup:", cmd)
+            r = run([str(SCRIPTS / "with-tools"), "sh", "-c", cmd], cwd=wt, timeout=900)
+            if r.returncode != 0:
+                return die(f"setup failed at `{cmd}`:\n{(r.stdout + r.stderr)[-2000:]}")
+
+    space, tab = f"sp{secrets.token_hex(16)}", f"tb{secrets.token_hex(16)}"
+    task = "\n".join(filter(None, [
+        f"Issue #{a.issue}: {title}", url,
+        f"Repo: {repo.name}. Branch: {branch} (base {base}). Worktree: {wt}.",
+        f"Report to your orchestrator by name: hc send {orchestrator_name(repo)} \"...\"", a.task,
+    ]))
+    r = run([str(SCRIPTS / "start-agent"), "--name", name, "--template", f"worker-{a.agent}", "--task", task, "--cwd", str(wt),
+             "--label", f"herdr.space={space}", "--label", f"herdr.tab={tab}",
+             "--label", f"issue={a.issue}", "--label", f"repo={repo.name}", "--outlive-parent"], timeout=300)
+    if r.returncode != 0:
+        return die(f"the agent did not start properly:\n{r.stderr.strip()}", r.returncode)
+    started = json.loads(r.stdout)
+
+    label = f"#{a.issue} {short_title(title)}"
+    for _ in range(20):  # the space shows up in the app right after hc run
+        if run_json(["herdr-app", "do", "space.rename", "--id", space, "--name", label]):
+            run(["herdr-app", "do", "tab.rename", "--id", tab, "--name", "worker"])
+            break
+        time.sleep(0.5)
+
+    record = read_json(record_path)
+    record.update({
+        "repo": repo.name, "repo_path": str(repo), "issue": a.issue, "title": title, "url": url,
+        "branch": branch, "base": base, "worktree": str(wt), "space": space, "tab": tab,
+        "worker": started["address"], "name": name, "agent": a.agent,
+        "phase": record.get("phase") if record.get("worktree") == str(wt) else "planning",
+        "created": record.get("created") or now_ms(), "updated": now_ms(),
+    })
+    write_json(record_path, record)
+    print(json.dumps({"worker": started["address"], "name": name, "space": label, "branch": branch, "worktree": str(wt)}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

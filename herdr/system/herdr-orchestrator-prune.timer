@@ -1,0 +1,10 @@
+[Unit]
+Description=herdr-orchestrator: daily prune of delivered workers
+
+[Timer]
+OnCalendar=*-*-* {{PRUNE_TIME}}
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""Install or update herdr-orchestrator on this machine, from this repo.
+
+Usage: install [--dry-run] [--hooks | --no-hooks] [--no-tests]
+
+Idempotent: run it again after pulling the repo or after updating herdr-app. In order:
+ 1. checks prerequisites (herdr-app, hc, claude, git, gh, patch; codex is optional);
+ 2. links the skill into ~/.agents/skills/herdr-orchestrator and ~/.claude/skills/herdr-orchestrator;
+ 3. hc templates (herdr/templates -> ~/.config/herdr-core/templates), with the configured models;
+ 4. the `orchestrator` mod (herdr/mod/orchestrator -> ~/.config/herdr-app/mods/orchestrator);
+ 5. orc-tabs, orc-menu: copies of herdr's own tabs/menu mods + herdr/patches (the project tab has
+    no close button; "Close project…"; tooltips with the bound keys). If a patch no longer applies,
+    keeps the previous copy and warns;
+ 6. keys: default bindings for the orchestrator's commands (KEYS below) added to ~/.config/herdr-app/keys.json
+    only where the key is free and the command isn't bound yet; never replaces a binding, and never adds
+    back one you removed;
+ 7. layout: the orchestrator sidebar (Needs you, Projects, Chats) in place of herdr's Spaces and
+    Agents lists, and orc-tabs. A built-in layout is cloned to `orchestrator` first;
+ 8. ui.json for the mods (group order and names, publish commands);
+ 9. Linux: login autostart, daily prune timer, and mise on the session PATH (if mise is used);
+10. hooks: the mark-session SessionStart hook in ~/.claude/settings.json and ~/.codex/hooks.json
+    (asks first; --hooks / --no-hooks to decide up front);
+11. runs `test --quick`.
+"""
+import json
+import platform
+import shutil
+import sys
+import tempfile
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _common import HOME, REPO, SKILL, TEMPLATES, config, run, run_json  # noqa: E402
+
+PKG = REPO / "herdr"
+APP = HOME / ".config/herdr-app"
+MODS = APP / "mods"
+LINK = HOME / ".agents/skills/herdr-orchestrator"
+STABLE_SCRIPTS = LINK / "scripts"  # paths written into files go through the link, not the clone
+PATCHED = {"tabs": "orc-tabs", "menu": "orc-menu"}
+# Sidebar blocks the orchestrator sidebar replaces (herdr's own, and earlier versions of this package).
+SIDEBAR_MODS = ("spaces", "agents", "orc-spaces", "orc-agents", "fm-spaces", "fm-agents")
+OLD_TABS = ("fm-tabs",)
+# Default keys for the sidebar's commands (delivered to the orchestrator mod's nextCommand()).
+KEYS = {
+    "ctrl-shift-a": "orchestrator.new",        # the "+ New" dialog: open a project or start a chat
+    "ctrl-shift-y": "orchestrator.needs-you",  # the first NEEDS YOU card's orchestrator
+    "ctrl-shift-g": "orchestrator.project",    # the current project's orchestrator
+}
+DRY = "--dry-run" in sys.argv
+warnings: list[str] = []
+
+
+def step(text: str) -> None:
+    print(f"• {text}")
+
+
+def write(dest: Path, content: str) -> bool:
+    """Write only if it changed. Returns whether it changed."""
+    if dest.exists() and dest.read_text() == content:
+        return False
+    if not DRY:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content)
+    return True
+
+
+def render(text: str) -> str:
+    cfg = config()
+    return (text.replace("{{WITH_TOOLS}}", str(STABLE_SCRIPTS / "with-tools"))
+            .replace("{{SCRIPTS}}", str(STABLE_SCRIPTS))
+            .replace("{{MODEL_WORKER_CLAUDE}}", cfg["models"]["worker_claude"])
+            .replace("{{MODEL_REVIEWER_CLAUDE}}", cfg["models"]["reviewer_claude"])
+            .replace("{{CODEX_ARGS}}", " ".join(cfg.get("codex_args", []))).replace(" \n", "\n")
+            .replace("{{PRUNE_TIME}}", cfg.get("prune_time", "08:30")))
+
+
+def prerequisites() -> bool:
+    missing = [b for b in ("herdr-app", "hc", "claude", "git", "gh", "patch") if not shutil.which(b)]
+    if missing:
+        print(f"missing: {', '.join(missing)}. See the README's Requirements.", file=sys.stderr)
+        return False
+    if not shutil.which("codex") and not (HOME / ".local/share/mise/shims/codex").exists():
+        warnings.append("codex not found: Claude workers will have no cross-harness reviewer (install Codex or use --agent claude reviews).")
+    if not (MODS / "tabs/main.js").exists():
+        print("herdr-app has not written its mods yet: open herdr-app once, then run install again.", file=sys.stderr)
+        return False
+    step(f"prerequisites ok (herdr-app {run(['herdr-app', '--version']).stdout.split()[-1]}, hc {run(['hc', '--version']).stdout.split()[-1]})")
+    return True
+
+
+def link_skill() -> None:
+    done = []
+    for dest in (LINK, HOME / ".claude/skills/herdr-orchestrator"):
+        if dest.is_symlink() and dest.resolve() == SKILL:
+            continue
+        if dest.exists() and not dest.is_symlink():
+            warnings.append(f"{dest} exists and is not a link to this repo; left as is.")
+            continue
+        if not DRY:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if dest.is_symlink():
+                dest.unlink()
+            dest.symlink_to(SKILL)
+        done.append(str(dest).replace(str(HOME), "~"))
+    step(f"skill linked: {', '.join(done) if done else 'up to date'}")
+
+
+def templates() -> None:
+    changed = [t.name for t in sorted((PKG / "templates").glob("*.md")) if write(TEMPLATES / t.name, render(t.read_text()))]
+    step(f"hc templates: {', '.join(changed) if changed else 'up to date'}")
+
+
+def orchestrator_mod() -> None:
+    dest = MODS / "orchestrator"
+    sources = {p.name: p for p in (PKG / "mod/orchestrator").iterdir() if p.is_file()}
+    changed = [n for n, p in sources.items() if n != "main.js" and write(dest / n, p.read_text())]
+    # main.js last: saving it reloads the mod, and the modules it imports are already in place.
+    if write(dest / "main.js", sources["main.js"].read_text()):
+        changed.append("main.js")
+    if dest.exists() and not DRY:
+        for extra in dest.iterdir():
+            if extra.is_file() and extra.name not in sources and extra.suffix in (".js", ".svg"):
+                extra.unlink()
+    step(f"orchestrator mod: {', '.join(changed) if changed else 'up to date'}")
+
+
+def patched_mods() -> None:
+    for original, name in PATCHED.items():
+        patch = PKG / "patches" / f"{original}.patch"
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / original / "main.js"
+            target.parent.mkdir(parents=True)
+            shutil.copy(MODS / original / "main.js", target)
+            r = run(["patch", "-p1", "--forward", "--silent", "-r", "-", "-i", str(patch)], cwd=tmp)
+            if r.returncode != 0:
+                warnings.append(f"{name}: the patch no longer applies to herdr's current '{original}' mod; kept the previous "
+                                f"copy. Update herdr/patches/{original}.patch (or open an issue).")
+                step(f"{name}: patch did not apply (see warnings)")
+                continue
+            new = target.read_text()
+        manifest = json.loads((MODS / original / "mod.json").read_text())
+        manifest["herdr_orchestrator"] = {"base": original, "patch": patch.name}
+        m1 = write(MODS / name / "mod.json", json.dumps(manifest, indent=2) + "\n")
+        m2 = write(MODS / name / "main.js", new)
+        step(f"{name}: {'updated' if (m1 or m2) else 'up to date'}")
+
+
+def keys() -> None:
+    path = APP / "keys.json"
+    state_path = HOME / ".local/state/herdr-orchestrator/keys-offered.json"
+    if not path.exists():
+        warnings.append("keys: ~/.config/herdr-app/keys.json not found (open herdr-app once); no default keys added.")
+        return
+    try:
+        data = json.loads(path.read_text())
+    except ValueError:
+        warnings.append("keys: ~/.config/herdr-app/keys.json is not valid JSON; no default keys added.")
+        return
+    try:
+        offered = set(json.loads(state_path.read_text()).get("offered", []))
+    except (OSError, ValueError):
+        offered = set()
+    bound_keys = {k for sec in data.values() if isinstance(sec, dict) for k in sec}
+    actions = lambda sec: [a if isinstance(a, str) else (a or {}).get("command") for a in sec.values()]  # noqa: E731
+    bound_actions = {a for sec in data.values() if isinstance(sec, dict) for a in actions(sec)}
+    added = []
+    for key, action in KEYS.items():
+        if action in offered:  # added (or skipped) once: a binding you removed stays removed
+            continue
+        offered.add(action)
+        if action in bound_actions:
+            continue
+        if key in bound_keys:
+            warnings.append(f"keys: {key} is already bound; bind {action} yourself in ~/.config/herdr-app/keys.json if you want it.")
+            continue
+        data.setdefault("global", {})[key] = action
+        added.append(f"{key} → {action}")
+    if not DRY:
+        if added:
+            path.write_text(json.dumps(data, indent=2) + "\n")
+        write(state_path, json.dumps({"offered": sorted(offered)}, indent=2) + "\n")
+    step(f"keys: {', '.join(added) if added else 'up to date'}")
+
+
+def layout() -> None:
+    name = (run_json(["herdr-app", "status"]) or {}).get("layout") or "main"
+    path = APP / "layouts" / f"{name}.json"
+    if not path.exists():  # a built-in layout: clone it to a personal one first
+        step(f"layout '{name}' is built in: cloning it to 'orchestrator'")
+        if DRY:
+            return
+        run(["herdr-app", "do", "layout.clone", "--name", name, "--as", "orchestrator"])
+        path = APP / "layouts/orchestrator.json"
+        if not path.exists():
+            warnings.append(f"could not clone layout '{name}'; switch to a personal layout and run install again.")
+            return
+        name = "orchestrator"
+    data = json.loads(path.read_text())
+    has_panel = False
+    sidebar_block = {"id": "orchestrator-sidebar", "type": "block", "content": {"mod": "orchestrator", "props": {"view": "sidebar"}}, "size": {"weight": 1}}
+
+    def is_mod(n, *mods):
+        return isinstance(n, dict) and isinstance(n.get("content"), dict) and n["content"].get("mod") in mods
+
+    def walk(n):
+        nonlocal has_panel
+        if isinstance(n, dict):
+            c = n.get("content") if isinstance(n.get("content"), dict) else None
+            if c and c.get("mod") in PATCHED:
+                c["mod"] = PATCHED[c["mod"]]
+            if c and c.get("mod") in OLD_TABS:
+                c["mod"] = "orc-tabs"
+            kids = n.get("children")
+            if isinstance(kids, list) and any(is_mod(k, *SIDEBAR_MODS) or k.get("id") == "orchestrator-sidebar" for k in kids):
+                # The sidebar column: one block, the orchestrator sidebar, where Spaces / Agents were.
+                at = next(i for i, k in enumerate(kids) if is_mod(k, *SIDEBAR_MODS) or k.get("id") == "orchestrator-sidebar")
+                kids[:] = [k for k in kids if not is_mod(k, *SIDEBAR_MODS) and k.get("id") not in ("orchestrator-sidebar", "foreman-sidebar")]
+                kids.insert(at, sidebar_block)
+            if n.get("id") == "panel-body":
+                has_panel = True
+                kids = n.setdefault("children", [])
+                kids[:] = [k for k in kids if k.get("id") not in ("issues", "details")]
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+
+    walk(data)
+    changed = write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    if changed and not DRY and (run_json(["herdr-app", "status"]) or {}).get("layout") != name:
+        run(["herdr-app", "do", "layout.switch", "--name", name])
+    step(f"layout '{name}': {'updated' if changed else 'up to date'}")
+
+
+def ui_json() -> None:
+    cfg = config()
+    publish = {"default": cfg.get("publish", "gh pr create --head {branch} --body-file {pr_file}")}
+    publish.update({repo: p["publish"] for repo, p in cfg.get("projects", {}).items() if p.get("publish")})
+    data = {"order": cfg["groups"].get("order", []), "names": cfg["groups"].get("names", {}), "publish": publish}
+    changed = write(HOME / ".local/state/herdr-orchestrator/ui.json", json.dumps(data, indent=2) + "\n")
+    step(f"ui.json: {'updated' if changed else 'up to date'}")
+
+
+def system() -> None:
+    if platform.system() != "Linux":
+        warnings.append("not Linux: skipped the login autostart, prune timer and session PATH (run on-login / prune-workers yourself).")
+        return
+    done = []
+    pairs = [
+        (PKG / "system/herdr-orchestrator-login.desktop", HOME / ".config/autostart/herdr-orchestrator-login.desktop"),
+        (PKG / "system/herdr-orchestrator-prune.service", HOME / ".config/systemd/user/herdr-orchestrator-prune.service"),
+        (PKG / "system/herdr-orchestrator-prune.timer", HOME / ".config/systemd/user/herdr-orchestrator-prune.timer"),
+    ]
+    if (HOME / ".local/share/mise/shims").is_dir():
+        pairs.append((PKG / "system/99-zz-herdr-orchestrator-mise.conf", HOME / ".config/environment.d/99-zz-herdr-orchestrator-mise.conf"))
+    app_entry = HOME / ".local/share/applications/herdr-app.desktop"
+    if app_entry.exists():  # also start herdr-app itself at login, so on-login has a window to talk to
+        pairs.append((app_entry, HOME / ".config/autostart/herdr-app.desktop"))
+    for source, dest in pairs:
+        if write(dest, render(source.read_text())):
+            done.append(dest.name)
+    if not DRY:
+        if done:
+            run(["systemctl", "--user", "daemon-reload"])
+        run(["systemctl", "--user", "enable", "--now", "herdr-orchestrator-prune.timer"])
+        for script in (SKILL / "scripts").iterdir():
+            if script.is_file() and not script.suffix:
+                script.chmod(0o755)
+    step(f"system: {', '.join(done) if done else 'up to date'}")
+
+
+def hooks() -> None:
+    mark = str(STABLE_SCRIPTS / "mark-session")
+    claude_path, codex_path = HOME / ".claude/settings.json", HOME / ".codex/hooks.json"
+    claude = json.loads(claude_path.read_text()) if claude_path.exists() else {}
+    codex = json.loads(codex_path.read_text()) if codex_path.exists() else {}
+    need_claude = "mark-session claude" not in json.dumps(claude)
+    need_codex = "mark-session codex" not in json.dumps(codex)
+    if not (need_claude or need_codex):
+        step("hooks: up to date")
+        return
+    what = " and ".join(p for p, n in ((str(claude_path).replace(str(HOME), "~"), need_claude), (str(codex_path).replace(str(HOME), "~"), need_codex)) if n)
+    if "--no-hooks" in sys.argv:
+        warnings.append(f"hooks not installed ({what}): agents won't be resumed after a reboot and orchestrators won't reopen with their conversation.")
+        return
+    if "--hooks" not in sys.argv:
+        if DRY or not sys.stdin.isatty():
+            warnings.append(f"hooks not installed ({what}); run install --hooks to add the mark-session SessionStart hook.")
+            return
+        if input(f"Add the mark-session SessionStart hook to {what}? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+            warnings.append("hooks skipped.")
+            return
+    entry = lambda kind: {"type": "command", "command": f"{mark} {kind}", "timeout": 10}  # noqa: E731
+    if need_claude and not DRY:
+        claude.setdefault("hooks", {}).setdefault("SessionStart", []).append({"hooks": [entry("claude")]})
+        claude_path.parent.mkdir(parents=True, exist_ok=True)
+        claude_path.write_text(json.dumps(claude, indent=2) + "\n")
+    if need_codex and not DRY:
+        codex.setdefault("hooks", {}).setdefault("SessionStart", []).append({"matcher": "startup|resume", "hooks": [entry("codex")]})
+        codex_path.parent.mkdir(parents=True, exist_ok=True)
+        codex_path.write_text(json.dumps(codex, indent=2) + "\n")
+        warnings.append("Codex: open codex and approve the new hook in /hooks once (Codex asks before running new hooks).")
+    step(f"hooks: added to {what}")
+
+
+def main() -> int:
+    print(f"herdr-orchestrator: installing from {REPO}{' (dry run)' if DRY else ''}")
+    if not prerequisites():
+        return 1
+    for part in (link_skill, templates, orchestrator_mod, patched_mods, keys, layout, ui_json, system, hooks):
+        part()
+    if "--no-tests" not in sys.argv and not DRY:
+        print("\nQuick tests:")
+        run_tests = run([SKILL / "scripts/test", "--quick"], timeout=900)
+        print(run_tests.stdout.rstrip())
+    if warnings:
+        print("\nWarnings:")
+        for w in warnings:
+            print(f"  ! {w}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

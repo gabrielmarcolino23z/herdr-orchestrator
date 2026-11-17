@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=herdr-orchestrator: resume agents and ensure projects
+Comment=Reopens Claude/Codex in herdr terminals and makes sure every project has its space and orchestrator
+Exec={{SCRIPTS}}/on-login
+Terminal=false
+X-GNOME-Autostart-Delay=10
