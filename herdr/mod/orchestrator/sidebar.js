@@ -16,6 +16,15 @@ import { v_flex, h_flex } from "gpui-base";
 import { agents, terminals, spaces, focused, theme, exec, hc, run, shared, setShared, notify, checking, watchFolder, readTextFile, openOverlay, settings, nextCommand, setAgentOrder } from "herdr";
 import { ago, base, ensure, orchestratorName, phasePill, readUi, readWorkers, script, shortcuts, statePath, workersDir } from "./lib.js";
 
+// Tree geometry (px). Rows are ROW_H tall and the row's text sits in the middle; TREE_MID puts the elbow's
+// line (TREE_LINE thick, drawn inside the box) on that middle. A nested level is indented by TREE_INDENT so
+// its line falls under the middle of the parent row's status mark (a 10px mark after a 6px gap: 6 + 5).
+const ROW_H = 25;
+const TREE_LINE = 1.5;
+const TREE_MID = ROW_H / 2 + TREE_LINE / 2;
+const TREE_SLOT = 10;
+const TREE_INDENT = 11;
+
 const norm = (s) => (s === "done" ? "idle" : s ?? "none"); // looking at a done agent turns it idle: not news
 const inside = (p, root) => Boolean(p) && (p === root || p.startsWith(root + "/"));
 
@@ -289,17 +298,27 @@ export const sidebar = {
         .on_click((_e, cx) => { cx.stop_propagation(); this.settle(it.key, it.version); cx.notify(); }).child("✓"));
   },
 
-  // Tree connectors as drawn lines: "│" a passing line, "├"/"└" an elbow, " " empty.
+  // Tree connectors, one slot per level: "│" a line passing by, "├" an elbow with the line going on, "└" the
+  // last elbow, " " nothing. Each slot is as tall as its row (rows sit with no gap), so the lines of
+  // consecutive rows join into one: a non-last item's line runs through every row under it (its activity
+  // line, reviewers, terminals) down to its next sibling. The elbow meets the row's middle, where its text
+  // is. The first slot's line sits under the project's chevron; deeper slots' lines sit under the parent
+  // row's status mark (TREE_INDENT + the row gap + half a mark).
   lines(t, tree) {
-    return [...tree].map((l) => div().self_start().mt(-4).w(10).h(l === "└" ? 17 : 29).mr(2).flex_none()
-      .when(l !== " ", (el) => el.border_l(1.5).border_color(t.border))
-      .when(l === "├" || l === "└", (el) => el.border_b(1.5).rounded_bl(l === "└" ? 6 : 0).h(17)));
+    return h_flex().flex_none().h_full().children([...tree].map((l, i) => {
+      const elbow = l === "├" || l === "└";
+      return v_flex().flex_none().h_full().w(i === 0 ? TREE_SLOT : TREE_SLOT + TREE_INDENT).when(i > 0, (el) => el.pl(TREE_INDENT))
+        .child(div().w_full().h(TREE_MID)
+          .when(l !== " ", (el) => el.border_l(TREE_LINE).border_color(t.border))
+          .when(elbow, (el) => el.border_b(TREE_LINE).border_color(t.border).when(l === "└", (e) => e.rounded_bl(6))))
+        .child(div().w_full().flex_1().when(l === "│" || l === "├", (el) => el.border_l(TREE_LINE).border_color(t.border)));
+    }));
   },
 
   row(t, id, { tree = "", mark = null, label, labelColor, tag = null, time = "", onClick, tip = null, bold = false }) {
-    return h_flex().id(id).h(25).pl(12).pr(6).gap(6).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+    return h_flex().id(id).h(ROW_H).pl(12).pr(6).gap(6).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
       .when(Boolean(tip), (el) => el.tooltip(tip)).on_click(onClick)
-      .when(Boolean(tree), (el) => el.children(this.lines(t, tree)))
+      .when(Boolean(tree), (el) => el.child(this.lines(t, tree)))
       .when(Boolean(mark), (el) => el.child(mark))
       .child(div().flex_1().min_w(0).truncate().text_color(labelColor ?? t.foreground).when(bold, (el) => el.font_semibold()).child(label))
       .when(Boolean(tag), (el) => el.child(tag))
@@ -334,9 +353,11 @@ export const sidebar = {
           onClick: () => this.openAgent(k.t.address, false), // peek: watch it, talk to the orchestrator
         }));
         const doing = k.s === "working" ? ((k.t.report?.msg ?? k.t.status?.msg) ?? "") : "";
-        if (doing) lines.push(h_flex().h(18).pl(30).gap(6).items_center().text_size(11).text_color(t.dim)
-          .child(div().flex_none().w(10).h(18).when(!last, (el) => el.border_l(1.5).border_color(t.border)))
-          .child(div().flex_1().min_w(0).truncate().italic().child(doing)));
+        // what it is doing, under its title: the sibling line passes by, and so does the line down to its
+        // reviewers / terminals, if it has any
+        if (doing) lines.push(h_flex().h(18).pl(12).pr(6).items_center().text_size(11).text_color(t.dim)
+          .child(this.lines(t, `${last ? " " : "│"}${k.reviewers.length ? "│" : " "}`))
+          .child(div().flex_1().min_w(0).ml(6 + 10 + 6 - TREE_SLOT - TREE_INDENT).truncate().italic().child(doing)));
         k.reviewers.forEach((r, j) => lines.push(this.row(t, `r-${r.t.address}`, {
           tree: `${last ? " " : "│"}${j === k.reviewers.length - 1 ? "└" : "├"}`, mark: this.mark(t, r.s),
           label: /^r-/.test(r.t.name ?? "") || /^reviewer-/.test(r.t.template ?? "")
