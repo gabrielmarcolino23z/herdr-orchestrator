@@ -10,5 +10,5 @@ export HC_SESSION=pvdemo
 export HERDR_APP_HOME=$HOME/.config/herdr-app
 export HERDR_TELEMETRY=0 HERDR_APP_NO_SOUND=1
 export HERDR_RELEASES_URL=http://127.0.0.1:9   # no update checks/downloads from the demo
-export PATH=$_bin:/usr/bin:/bin
+export PATH=$DEMO_SCRIPTS/bin:$_bin:/usr/bin:/bin   # bin/: offline gh (fake backlog) and a fake bun
 mkdir -p "$HOME"

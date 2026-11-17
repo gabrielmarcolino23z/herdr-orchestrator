@@ -1,0 +1,15 @@
+#!/bin/sh
+# Offline stand-in for gh in the demo (first on the demo PATH): `gh issue list` prints a fake backlog
+# for the fake repo in the current folder; anything else fails. No network, no GitHub account.
+[ "$1 $2" = "issue list" ] || { echo "gh: offline demo" >&2; exit 1; }
+i() { printf '{"number":%s,"title":"%s","url":"https://github.com/acme/%s/issues/%s","labels":[]}' "$1" "$2" "$repo" "$1"; }
+repo=$(basename "$PWD")
+case $repo in
+  storefront) printf '[%s,%s,%s,%s,%s,%s,%s]\n' "$(i 53 'Add a sitemap.xml')" "$(i 51 'Wishlist button misaligned on Safari')" \
+    "$(i 48 'Apple Pay on the product page')" "$(i 47 'Show saved cards at checkout')" \
+    "$(i 45 'Fix cart total rounding on discounts')" "$(i 42 'Add Apple Pay to checkout')" "$(i 39 'Lazy-load product images')" ;;
+  api) printf '[%s,%s,%s,%s]\n' "$(i 27 'Document the webhook signature header')" "$(i 24 'Return 422 on invalid coupon codes')" \
+    "$(i 21 'Paginate GET /orders')" "$(i 18 'Rate-limit the public webhooks endpoint')" ;;
+  docs-site) printf '[%s,%s]\n' "$(i 9 'Dark mode for code blocks')" "$(i 7 'Broken link in the install guide')" ;;
+  *) echo '[]' ;;
+esac

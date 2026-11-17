@@ -1,11 +1,12 @@
 #!/bin/sh
-# Regenerates preview.png from a fake, isolated world: fake repos under ~/demo (HOME=$PREVIEW_DIR/home),
+# Regenerates the README images from a fake, isolated world: fake repos under ~/demo (HOME=$PREVIEW_DIR/home),
 # fake agents in their own hc session (HC_SESSION=pvdemo), and a second herdr-app with its own
-# HERDR_APP_HOME, shown in a headless GNOME Shell (own dbus session, virtual 1600x1000 monitor).
+# HERDR_APP_HOME, shown in a headless GNOME Shell (own dbus session, virtual 1600x1000 monitor at 2x).
+# No network: bin/gh is an offline stand-in that prints a fake backlog.
 # Your herdr-app window and default hc session are never touched.
-#   docs/preview/run.sh            build and open the demo (Linux, GNOME Shell needed)
+#   docs/preview/run.sh            build and open the demo (Linux; needs GNOME Shell, python3-gi, ffmpeg)
 #   (wait ~5 min: the sidebar's ages count from each agent's last status)
-#   docs/preview/shot.sh preview.png
+#   docs/preview/shots.sh          preview.png and docs/images/*.png (shot.sh out.png: one window shot)
 #   docs/preview/down.sh           stop the demo app and the pvdemo session
 D="$(cd "$(dirname "$0")" && pwd)"
 . "$D/env.sh"

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fake `bun test` for the demo's helper terminal (tests · bun test under a worker): prints a run, then waits.
+printf '\033[1mbun test\033[0m v1.2.4\n\n'
+for f in "lazy-image.test.ts:6" "product-grid.test.ts:11" "gallery.test.ts:4" "cart.test.ts:23" "checkout.test.ts:31"; do
+  printf '\033[32m✓\033[0m src/%s \033[90m[%s tests]\033[0m\n' "${f%%:*}" "${f##*:}"; sleep 0.2
+done
+printf '\n\033[90mrunning e2e: product page…\033[0m\n'
+while :; do sleep 100000; done

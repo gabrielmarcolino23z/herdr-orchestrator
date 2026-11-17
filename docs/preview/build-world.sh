@@ -32,14 +32,14 @@ J
 SF=$R/acme/storefront API=$R/acme/api DOCS=$R/oss/docs-site
 X=""
 o_sf=$(run storefront orchestrator-storefront $SF 0 claude-code idle "" $T/orch-storefront.txt)
-o_api=$(run api orchestrator-api $API 60 claude-code done "" $T/orch-api.txt)
-o_docs=$(run docs-site orchestrator-docs-site $DOCS 0 claude-code idle "" $T/orch-docs.txt)
+o_api=$(run api orchestrator-api $API 100 claude-code done "" $T/orch-api.txt)
+o_docs=$(run docs-site orchestrator-docs-site $DOCS 45 claude-code blocked "Permission: open-worker 7" $T/orch-docs.txt)
 X="--parent $o_sf --label repo=storefront --label issue=42"
-run w42 w-storefront-42 $SF 120 claude-code working "Writing the ApplePaySession handler" $T/worker.txt >/dev/null
+run w42 w-storefront-42 $SF 120 claude-code working "Writing the ApplePaySession handler" $T/worker-42.txt >/dev/null
 X="--parent $o_sf --label repo=storefront --label issue=45"
 w45=$(run w45 w-storefront-45 $SF 30 claude-code idle "" $T/worker.txt)
 X="--parent $o_sf --label repo=storefront --label issue=39"
-run w39 w-storefront-39 $SF 90 claude-code working "Running Lighthouse on /products" $T/worker.txt >/dev/null
+w39=$(run w39 w-storefront-39 $SF 90 claude-code working "Running Lighthouse on /products" $T/worker.txt)
 X="--parent $o_api --label repo=api --label issue=18"
 run w18 w-api-18 $API 60 claude-code done "" $T/worker.txt >/dev/null
 X="--parent $o_api --label repo=api --label issue=21"
@@ -48,6 +48,8 @@ run w21 w-api-21 $API 150 claude-code working "Reading the orders query and curs
 mkdir -p $HOME/.config/herdr-core/templates
 printf -- '---\nname: reviewer-codex\ndescription: demo reviewer\ncommand: %s\n---\nReview the diff.\n' "$DEMO_SCRIPTS/reviewer.sh" > $HOME/.config/herdr-core/templates/reviewer-codex.md
 hc run --bg --keep --name r-storefront-45 --cwd $SF --parent $w45 reviewer-codex "Review #45" >/dev/null
+# a helper terminal of worker #39 (its test suite, a fake bun from bin/): shows as "tests · bun test"
+hc run --bg --keep --name w-storefront-39-tests --cwd $SF --parent $w39 -- bun test >/dev/null
 # your chat in the docs-site project, and one chat outside any project
 X=""
 run docs-site chat-docs $DOCS 20 claude-code idle "" "" "Proofread the install guide" >/dev/null

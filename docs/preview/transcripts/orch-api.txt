@@ -2,7 +2,18 @@
 
 [90m>[0m rate-limit the webhooks and paginate orders
 
-[38;5;173m●[0m Opened w-api-18 (#18) and w-api-21 (#21).
+[38;5;173m●[0m Opened w-api-18 (#18) and w-api-21 (#21), each in its own worktree.
 
-[38;5;173m●[0m [1m#18 is ready.[0m Tests pass, load test holds at 500 req/s, review approved.
-  PR body: ~/.local/state/herdr-orchestrator/pr/api-18.md. Publish it?
+[38;5;173m●[0m #21 Paginate GET /orders is planning. Nothing needed from you.
+
+[38;5;173m●[0m [1m#18 Rate-limit the public webhooks endpoint is ready.[0m It targets [1mmain[0m, a protected
+  branch, so merging is your call:
+
+  [90mWhat changes[0m  senders over 100 requests/min get 429 with Retry-After
+  [90mRisk[0m          medium: a public contract changes (new 429s); no data or auth touched
+  [90mProofs[0m        212 tests pass · load test holds at 500 req/s · CI green
+                Codex review (other harness): VERDICT: APPROVE
+  [90mSee it[0m        [36mbun run dev[0m, then [36mscripts/flood-webhooks.sh[0m: call 101 gets a 429
+  [90mPR[0m            [36mhttps://github.com/acme/api/pull/31[0m
+
+  Merge it into main?

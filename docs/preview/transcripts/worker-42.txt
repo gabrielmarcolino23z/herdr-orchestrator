@@ -1,0 +1,19 @@
+[38;5;173m✻[0m [1mWorker · #42 Add Apple Pay to checkout[0m  [90m~/demo/acme/storefront-42 · feat/42-add-apple-pay-checkout[0m
+
+[38;5;173m●[0m Plan, from the issue and the repo's AGENTS.md:
+  1. [90m✓[0m POST /api/apple-pay/session: validate the merchant with Apple
+  2. [38;5;173m▸[0m ApplePaySession handler in checkout (shipping, total, onpaymentauthorized)
+  3.   Apple Pay button, shown only when [36mApplePaySession.canMakePayments()[0m
+  4.   Tests: unit for the handler, e2e for the button's visibility
+
+[38;5;173m●[0m [1mBash[0m(worker-phase implementing --note "session endpoint done")
+  [90m⎿[0m  #42 → implementing
+
+[38;5;173m●[0m [1mUpdate[0m(src/checkout/apple-pay.ts)
+  [90m⎿[0m  Added 48 lines
+     [32m+ export function startApplePay(cart: Cart) {[0m
+     [32m+   const session = new ApplePaySession(3, paymentRequest(cart));[0m
+     [32m+   session.onvalidatemerchant = (e) => validateMerchant(e.validationURL);[0m
+     [32m+   session.onpaymentauthorized = (e) => authorize(cart, e.payment);[0m
+
+[38;5;173m●[0m Writing the ApplePaySession handler…

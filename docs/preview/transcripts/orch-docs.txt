@@ -1,3 +1,18 @@
 [38;5;173m✻[0m [1mOrchestrator · docs-site[0m  [90m~/demo/oss/docs-site[0m
 
-[90mNo workers yet. Ask me to look at the backlog.[0m
+[90m>[0m the install guide has a broken link, #7. fix it
+
+[38;5;173m●[0m #7 is small and has no blockers. Opening a worker for it.
+
+[38;5;173m●[0m [1mBash[0m(open-worker 7)
+
+@@RULE@@
+ [1mBash command[0m
+
+   open-worker 7
+   [90mOpen a worker for #7 (Broken link in the install guide)[0m
+
+ Do you want to proceed?
+ [36m❯ 1. Yes[0m
+   2. Yes, and don't ask again for [1mopen-worker[0m commands
+   3. No, and tell Claude what to do differently [90m(esc)[0m
