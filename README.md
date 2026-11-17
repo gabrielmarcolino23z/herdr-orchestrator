@@ -177,6 +177,10 @@ Workers and orchestrators run with **your** Claude Code and Codex permission set
 
 The README images are reproducible from a fake, isolated demo (its own HOME, hc session and herdr-app window, no network): `docs/preview/run.sh`, wait ~5 minutes, then `docs/preview/shots.sh`; `docs/preview/down.sh` stops it.
 
+## Contributing
+
+Bug reports, ideas and small, focused pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to run the demo and the tests, how to refresh the patches to herdr's `tabs` and `menu` mods after a herdr-app update, and the style. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+
 ## Uninstall
 
 1. Switch back to a built-in layout (`ctrl-shift-l`).
