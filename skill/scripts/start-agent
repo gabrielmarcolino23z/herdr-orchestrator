@@ -12,12 +12,11 @@ screen (exit 3). Prints a JSON with the terminal's address.
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _common import TRUST_DIALOGS, run, run_json, template_body  # noqa: E402
+from _common import accept_trust, run, run_json, template_body  # noqa: E402
 
 
 def screen_tail(address: str) -> str:
@@ -51,18 +50,8 @@ def main() -> int:
         print(json.dumps({"address": address, "name": a.name, "sent": True}))
         return 0
 
-    deadline = time.monotonic() + 45
-    accepted = False
-    while time.monotonic() < deadline and not accepted:
-        screen = run(["hc", "read", address, "--lines", "0"]).stdout
-        for marker, keys in TRUST_DIALOGS:
-            if marker in screen:
-                run(["hc", "keys", address, *keys])
-                accepted = True
-                break
-        else:
-            time.sleep(1.5)
-    if not accepted:
+    trust = accept_trust(address, 45)
+    if trust == "unknown":
         print(json.dumps({"error": "unknown dialog; resolve it and send the task", "address": address, "screen": screen_tail(address)}), file=sys.stderr)
         return 3
 
@@ -74,7 +63,7 @@ def main() -> int:
     if not sent.get("started", False):
         print(json.dumps({"error": "the first message did not start a turn; check the screen", "address": address, "screen": screen_tail(address)}), file=sys.stderr)
         return 3
-    print(json.dumps({"address": address, "name": a.name, "sent": True, "trust": "accepted"}))
+    print(json.dumps({"address": address, "name": a.name, "sent": True, "trust": trust}))
     return 0
 
 

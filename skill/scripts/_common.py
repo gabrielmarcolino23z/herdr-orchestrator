@@ -31,7 +31,8 @@ os.environ["PATH"] = f"{HOME}/.local/share/mise/shims:{HOME}/.local/bin:" + os.e
 
 # Folder trust dialogs and the keys that accept each one.
 TRUST_DIALOGS = [
-    ("Yes, I trust this folder", ["down", "enter"]),  # Claude Code
+    ("Yes, I trust this folder", ["down", "enter"]),  # Claude Code: "No, exit" is selected first
+    ("Do you trust the files in this folder?", ["enter"]),  # older Claude Code: "Yes, proceed" is selected
     ("Trust and continue", ["enter"]),  # Codex: the option is already selected
 ]
 READY_MARKERS = ("auto mode", "shift+tab", "Ask Codex", "? for shortcuts")
@@ -126,20 +127,40 @@ def is_live(name: str) -> bool:
     return (run_json(["hc", "get", name, "--json"]) or {}).get("state") == "live"
 
 
-def accept_trust(address: str, seconds: int = 20) -> str:
+def trust_dialog(screen: str):
+    """The keys that accept the folder trust dialog on this screen, or None. When the accepting option is
+    already selected (a "down" went through but its "enter" didn't), only enter: another "down" could
+    wrap around to "No, exit"."""
+    for marker, keys in TRUST_DIALOGS:
+        if marker in screen:
+            selected = any(marker in line and "❯" in line for line in screen.splitlines())
+            return ["enter"] if selected else keys
+    return None
+
+
+def accept_trust(address: str, seconds: int = 90) -> str:
     """Wait for the agent to be ready, accepting a folder trust dialog on the way.
-    Returns 'ready', 'accepted' or 'unknown' (some other screen)."""
+    Polls until the agent's input box shows (`seconds` at most: a cold start, or a herdr-app that is still
+    adopting the terminal, can take a while). Keys sent while the agent is still starting or redrawing
+    (herdr resizes a terminal when it gives it a pane) can be lost, so after accepting it checks that the
+    dialog went away, and presses again if not.
+    Returns 'ready' (no dialog), 'accepted' or 'unknown' (still another screen when time ran out)."""
     deadline = time.monotonic() + seconds
+    accepted, pressed_at = False, 0.0
     while time.monotonic() < deadline:
         screen = run(["hc", "read", address, "--lines", "0"]).stdout
-        for marker, keys in TRUST_DIALOGS:
-            if marker in screen:
+        keys = trust_dialog(screen)
+        if keys:
+            if time.monotonic() - pressed_at > 3:  # first time, or the last keys didn't take
+                time.sleep(0.5 if not pressed_at else 0)  # let it finish drawing before the first keys
                 run(["hc", "keys", address, *keys])
-                return "accepted"
-        if any(m in screen for m in READY_MARKERS):
-            return "ready"
-        time.sleep(1)
-    return "unknown"
+                accepted, pressed_at = True, time.monotonic()
+        elif any(m in screen for m in READY_MARKERS):
+            return "accepted" if accepted else "ready"
+        elif accepted and time.monotonic() - pressed_at > 6:  # the dialog is gone; whatever is next isn't ours
+            return "accepted"
+        time.sleep(0.5)
+    return "accepted" if accepted and not trust_dialog(run(["hc", "read", address, "--lines", "0"]).stdout) else "unknown"
 
 
 def template_body(name: str) -> str:
