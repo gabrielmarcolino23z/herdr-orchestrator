@@ -13,14 +13,14 @@ Every git repo you open becomes a project with one agent to talk to, its orchest
   - **PROJECTS:** group labels (11px, dim; the folder holding the repos, config order first, then alphabetical). One row per project:
     - a chevron (only when there is something to expand), the project name (semibold), and its orchestrator's state on the right: **orchestrating · N working**, three accent bars looping in height, when its workers run and it doesn't; otherwise "thinking", "needs you", "replied", or "no orchestrator"; idle shows only the time.
     - Group labels: 10px uppercase, dim.
-    - Expanded: a tree drawn with 1.5px border lines (elbow rounded on the last item). It lists the workers (status mark, `#n title`, phase pill tinted with its color, time) and any other agent the orchestrator started (its title); under a working worker, an italic line with what it is doing (its OSC 7501 message); under each worker, its reviewer (`reviewer · codex`) and its helper terminals (`tests · bun test`); then "your chat · …" rows for other agents in that repo.
+    - Expanded: a tree drawn with 1.5px border lines (elbow rounded on the last item). Each level is a slot as tall as its row and rows have no gap, so a non-last item's line runs unbroken through the rows under it (its activity line, reviewers, terminals) to its next sibling; elbows meet the row's middle; nested lines sit under the parent row's status mark. It lists the workers (status mark, `#n title`, phase pill tinted with its color, time) and any other agent the orchestrator started (its title); under a working worker, an italic line with what it is doing (its OSC 7501 message); under each worker, its reviewer (`reviewer · codex`) and its helper terminals (`tests · bun test`); then "your chat · …" rows for other agents in that repo.
     - Projects with workers are expanded by default and sorted first.
   - **CHATS** ("not in a project", right): agents outside any project, as `space · title` rows.
   - **Other spaces (n):** folded; spaces without agents.
 - **Status marks:** working = spinner (working color); blocked = dot (blocked); done = dot (done); idle = ring (idle).
 - **Phase pills:** planning ansi4, implementing working, verifying ansi3, reviewing ansi5, ready done, blocked blocked.
 - **Project tab (`project`, first in each project space, no close button):** the repo name and path, an "Orchestrator" card (state, "go to orchestrator" / "▶ open orchestrator"), "Workers (n)", "Backlog · open issues (n)" (with `▶ worker` and `✕`), and "Close project…".
-- **+ New dialog:** "Open a project" (system folder picker) and "New chat". New chat has a title field and "Where" chips (each project, "On its own").
+- **+ New dialog:** "Open a project" (system folder picker) and "New chat". New chat has a title field and "Where" chips (each project, "On its own"), wrapping onto more lines as projects add up; the dialog grows to fit. A picked folder that isn't a git repo gets "This folder isn't a git repo" with **Initialize git here** (`git init -b main`: no commit, no remote; then the project opens) or Back.
 
 ## How it behaves
 
@@ -55,7 +55,8 @@ Every git repo you open becomes a project with one agent to talk to, its orchest
 
 - **herdr closes a space when its last tab closes.** The mod tab (`project`) keeps project spaces alive, and the registry plus the sidebar timer bring them back.
 - **`hc get` answers for finished terminals too.** "Live" means `state == "live"`.
-- **New folders show a trust dialog** in Claude Code ("Yes, I trust this folder": down, enter) and Codex ("Trust and continue": enter). A template's first message is lost behind it and must be resent.
+- **New folders show a trust dialog** in Claude Code ("Yes, I trust this folder" under a selected "No, exit": down, enter) and Codex ("Trust and continue": enter). A template's first message is lost behind it and must be resent. Keys sent while herdr adopts the terminal (a resize and redraw) can be lost: `accept_trust` polls up to 60–90 s, checks that the dialog went away and presses again if not (only enter when "Yes" is already selected, since another down could wrap to "No, exit").
+- **A project needs a git repo.** `ensure-projects --create` on a folder outside any repo exits 3; `--init` runs `git init -b main` first.
 - **herdr-core terminals don't read the shell rc,** so tools from version managers (mise) need `with-tools` or the session PATH.
 - **Codex** needs `--no-daemon` and asks once before running new hooks (`/hooks`).
 - **Never keep a `cx`; `new` is a JavaScript keyword** (the view object is `newDialog`).

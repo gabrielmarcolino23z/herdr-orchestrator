@@ -37,7 +37,7 @@ In Codex, approve the new hook once in `/hooks`.
 
 ### 1. Open a project
 
-Click **+ New** at the top of the sidebar (or press Ctrl+Shift+A) and choose **Open a project**. Pick a repo folder you already have, wherever it lives. Opening a herdr space at a repo's root works too.
+Click **+ New** at the top of the sidebar (or press Ctrl+Shift+A) and choose **Open a project**. Pick a repo folder you already have, wherever it lives. Opening a herdr space at a repo's root works too. A folder that isn't a git repo yet gets one with **Initialize git here** (`git init -b main`: no commit, no remote).
 
 <img src="docs/images/new-dialog.png" alt="The + New dialog: Open a project, or New chat" width="552">
 
