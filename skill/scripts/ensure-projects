@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make sure every project has its space, with the anchor tab ("project") and its orchestrator.
 
-Usage: ensure-projects [--space ID] [--repo DIR] [--create DIR] [--close DIR] [--no-orchestrator] [--dry-run]
+Usage: ensure-projects [--space ID] [--repo DIR] [--create DIR [--init]] [--close DIR] [--no-orchestrator] [--dry-run]
 
 A project is a main git repo (not a worktree) under `projects_root` with a space in herdr.
 - anchor: a "project" tab (the `orchestrator` mod, project view), always first. It is not a terminal,
@@ -11,7 +11,9 @@ A project is a main git repo (not a worktree) under `projects_root` with a space
 - registry (projects.json): with no filters, a registered project whose space disappeared is
   recreated. That is what makes projects impossible to close by accident.
 --space ID / --repo DIR: only that space / that repo.
---create DIR: register and create the project's space (or ensure it, if it exists).
+--create DIR: register and create the project's space (or ensure it, if it exists). DIR must be in a
+  git repo (not a worktree); if it isn't in one at all, it exits with code 3 and says so.
+--init: with --create, a folder that isn't in a git repo gets `git init -b main` first (no commit, no remote).
 --close DIR: the one way to close a project on purpose: unregister it and close its space.
 --no-orchestrator: only the anchor.
 """
@@ -88,7 +90,9 @@ def launch_orchestrator(space_id: str, repo: Path, dry: bool) -> str | None:
         if run_json(["herdr-app", "do", "tab.rename", "--id", tab, "--name", "orchestrator"]):
             break
         time.sleep(0.5)
-    accept_trust(name)
+    # A new folder shows a trust dialog first; accept it, or the orchestrator sits on it (blocked).
+    if accept_trust(name, 60) == "unknown":
+        print(f"{name} isn't ready after 60 s; look at its terminal (a dialog may be waiting).", file=sys.stderr)
     return name
 
 
@@ -117,6 +121,32 @@ def close_project(path: str, dry: bool) -> int:
     return 0
 
 
+def repo_to_create(folder: Path, init: bool, dry: bool) -> Path | int:
+    """The repo --create opens for `folder`, or an exit code after a clear message.
+    Exit 3: not in a git repo (the + New dialog offers to initialize one; --init does it)."""
+    if not folder.is_dir():
+        print(f"{folder} is not a folder.", file=sys.stderr)
+        return 1
+    inside = run(["git", "rev-parse", "--is-inside-work-tree"], cwd=folder, timeout=10).stdout.strip() == "true"
+    if not inside:
+        if not init:
+            print(f"{folder} isn't a git repo, and a project needs one. Run `git init -b main` there "
+                  "(or pass --init), then open it again.", file=sys.stderr)
+            return 3
+        print(f"{'would initialize' if dry else 'initializing'} git in {folder} (branch main, no commit, no remote)")
+        if dry:
+            return folder
+        r = run(["git", "init", "-q", "-b", "main"], cwd=folder, timeout=30)
+        if r.returncode != 0:
+            print(f"git init failed in {folder}: {(r.stderr or r.stdout).strip()}", file=sys.stderr)
+            return 1
+    repo = main_repo(folder)
+    if repo is None:
+        print(f"{folder} is a git worktree, not a main repo: open the main repo as the project instead.", file=sys.stderr)
+        return 1
+    return repo
+
+
 def lock():
     """One at a time: the sidebar, login and the anchor may call at once."""
     STATE.mkdir(parents=True, exist_ok=True)
@@ -137,6 +167,7 @@ def main() -> int:
     p.add_argument("--space")
     p.add_argument("--repo")
     p.add_argument("--create")
+    p.add_argument("--init", action="store_true")
     p.add_argument("--close")
     p.add_argument("--no-orchestrator", action="store_true")
     p.add_argument("--dry-run", action="store_true")
@@ -150,10 +181,9 @@ def main() -> int:
 
     only_repo = Path(a.repo).expanduser().resolve() if a.repo else None
     if a.create:
-        repo = main_repo(Path(a.create).expanduser().resolve())
-        if repo is None:
-            print(f"{a.create} is not inside a git repository (or is a worktree).", file=sys.stderr)
-            return 1
+        repo = repo_to_create(Path(a.create).expanduser().resolve(), a.init, a.dry_run)
+        if not isinstance(repo, Path):
+            return repo
         if not a.dry_run:
             save_registry(registry() + [str(repo)])
         if not project_spaces(None, repo):
