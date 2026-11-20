@@ -111,7 +111,7 @@ After a reboot, herdr brings your terminals back as plain shells; herdr-orchestr
 It replaces herdr's Spaces and Agents lists:
 
 - **Needs you:** one card per project whose orchestrator replied or asks for something, and **+ New**.
-- **Projects:** grouped by the folder that holds them (`groups` in the config). Each project is its orchestrator plus everything it started, as a tree, and your own chats in that repo. In each group, projects with workers come first and start expanded. Click a project's name to talk to its orchestrator; the chevron only folds it.
+- **Projects:** grouped by the folder that holds them (`groups` in the config). Each project is its orchestrator plus everything it started, as a tree, and your own chats in that repo. In each group, projects with workers come first and start expanded. Click a project's name to talk to its orchestrator; the chevron only folds it. Click a group label to fold the whole folder: folded, it reads "3 projects · 2 working".
 - **Chats:** your agents that aren't in any project.
 - **Other spaces:** folded; spaces without agents.
 

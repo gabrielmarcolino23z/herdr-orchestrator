@@ -4,6 +4,14 @@ All notable changes to herdr-orchestrator. The format follows [Keep a Changelog]
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
+### Added
+- **Folders fold.** Click a group label in **Projects** (the folder that holds the repos) to fold it. Folded, it reads "3 projects · 2 working" (in the accent color while agents work); the state is remembered.
+
+### Fixed
+- The demo installer (`docs/preview/install-demo.py`) no longer leaves a `__pycache__` in `skill/scripts`, which made the quick test's "no __pycache__ in the skill" check fail.
+
 ## [0.2.0] - 2026-11-17
 
 ### Added
@@ -31,6 +39,7 @@ First public release.
 - Resume after a reboot (`SessionStart` hook), a daily prune of finished worktrees, keyboard shortcuts with live tooltips.
 - `install` (idempotent), quick and end-to-end tests, and a fake, isolated demo that produces every README image.
 
-[Unreleased]: https://github.com/gabrielmarcolino23z/herdr-orchestrator/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/gabrielmarcolino23z/herdr-orchestrator/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gabrielmarcolino23z/herdr-orchestrator/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/gabrielmarcolino23z/herdr-orchestrator/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/gabrielmarcolino23z/herdr-orchestrator/releases/tag/v0.1.0

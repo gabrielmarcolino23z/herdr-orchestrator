@@ -1,6 +1,7 @@
 # Runs the repo's own install steps (mod, patched tabs/menu, keys, layout, ui.json) against the demo HOME only.
 # Skips: skill links, hc templates, systemd/autostart, hooks, tests.
 import os, sys, importlib.util, importlib.machinery
+sys.dont_write_bytecode = True  # never leave __pycache__ in the skill
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.argv = ["install"]
 sys.path.insert(0, REPO + "/skill/scripts")
