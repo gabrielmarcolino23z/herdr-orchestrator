@@ -423,10 +423,27 @@ export const sidebar = {
         .hover((s) => s.text_color(t.foreground)).on_click((_e, cx) => { setShared("orchestrator.inbox", {}); cx.notify(); })
         .child(`Hidden (${hidden}) · show again`)))
       .child(this.section(t, "PROJECTS"))
-      .children(model.projects.length ? groups.flatMap((g) => [
-        div().px(8).pt(8).pb(1).text_size(10).font_semibold().text_color(t.dim).child(groupName(g).toUpperCase()),
-        ...model.projects.filter((p) => p.group === g).sort(sortP).map((p) => this.project(t, p, model, current)),
-      ]) : [div().px(6).py(2).text_size(12).text_color(t.dim).child("No projects yet. + New → Open a project: pick a repo folder and you get its orchestrator to talk to.")])
+      .children(model.projects.length ? groups.flatMap((g) => {
+        // A group (the folder holding the repos) folds like a project; folded, it still says what runs inside.
+        const ps = model.projects.filter((p) => p.group === g).sort(sortP);
+        const key = `group:${g}`;
+        const open = this.expanded[key] ?? true;
+        const working = ps.reduce((n, p) => n + p.active, 0);
+        const toggle = (_e, cx) => {
+          this.expanded = { ...this.expanded, [key]: !open };
+          try { localStorage.setItem("orchestrator.expanded", JSON.stringify(this.expanded)); } catch (_e) {}
+          cx.notify();
+        };
+        return [
+          h_flex().id(key).px(4).pt(8).pb(1).gap(4).items_center().cursor_pointer().on_click(toggle)
+            .tooltip(open ? "Fold this folder" : "Show its projects")
+            .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(9).text_color(t.dim))
+            .child(div().flex_1().text_size(10).font_semibold().text_color(t.dim).hover((s) => s.text_color(t.muted)).child(groupName(g).toUpperCase()))
+            .when(!open, (el) => el.child(div().text_size(10.5).text_color(working ? t.accent : t.dim)
+              .child(`${ps.length} project${ps.length === 1 ? "" : "s"}${working ? ` · ${working} working` : ""}`))),
+          ...(open ? ps.map((p) => this.project(t, p, model, current)) : []),
+        ];
+      }) : [div().px(6).py(2).text_size(12).text_color(t.dim).child("No projects yet. + New → Open a project: pick a repo folder and you get its orchestrator to talk to.")])
       .child(this.section(t, "CHATS", div().text_size(11).text_color(t.dim).child("not in a project")))
       .children(model.looseChats.length ? model.looseChats.map(({ a, t: x }) => this.row(t, `lc-${a.address}`, {
         mark: this.mark(t, a.status), label: `${a.space_name}${a.title ? ` · ${a.title}` : ""}`,
